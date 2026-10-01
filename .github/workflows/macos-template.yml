@@ -1,0 +1,63 @@
+name: macOS export template
+
+on:
+  workflow_dispatch:
+    inputs:
+      godot_ref:
+        description: Godot tag
+        default: 4.7.2-stable
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: godotengine/godot
+          ref: ${{ inputs.godot_ref }}
+          path: godot
+
+      - name: Install SCons
+        run: python3 -m pip install --break-system-packages scons
+
+      - name: Build arm64 and x86_64
+        working-directory: godot
+        env:
+          SCRIPT_AES256_ENCRYPTION_KEY: ${{ secrets.ENGINE_KEY }}
+        run: |
+          for arch in arm64 x86_64; do
+            scons platform=macos target=template_release arch=$arch production=yes \
+              vulkan=no accesskit=no -j3
+          done
+          ls -la bin
+
+      - name: Universal template zip
+        working-directory: godot
+        run: |
+          lipo -create bin/godot.macos.template_release.arm64 bin/godot.macos.template_release.x86_64 \
+            -output godot_macos_release.universal
+          cp -R misc/dist/macos_template.app .
+          mkdir -p macos_template.app/Contents/MacOS
+          cp godot_macos_release.universal macos_template.app/Contents/MacOS/godot_macos_release.universal
+          cp godot_macos_release.universal macos_template.app/Contents/MacOS/godot_macos_debug.universal
+          chmod +x macos_template.app/Contents/MacOS/*
+          zip -q -9 -r macos.zip macos_template.app
+
+      - name: Encrypt
+        working-directory: godot
+        env:
+          ARTIFACT_PASS: ${{ secrets.ARTIFACT_PASS }}
+        run: |
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in macos.zip -out macos.zip.enc -pass env:ARTIFACT_PASS
+          rm macos.zip godot_macos_release.universal bin/godot.macos.template_release.*
+          shasum -a 256 macos.zip.enc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-template
+          path: godot/macos.zip.enc
+          retention-days: 2
